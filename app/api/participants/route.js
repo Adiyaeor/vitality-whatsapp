@@ -1,11 +1,10 @@
-export const dynamic = "force-dynamic"; // אל תשמר בקאש
+export const dynamic = "force-dynamic";
 
 function fmt(d) {
-  // פורמט לפי דרישת Arbox: dd-mm-YYYY
   const dd = String(d.getDate()).padStart(2, "0");
   const mm = String(d.getMonth() + 1).padStart(2, "0");
   const yyyy = d.getFullYear();
-  return `${dd}-${mm}-${yyyy}`; // dd-mm-YYYY
+  return `${dd}-${mm}-${yyyy}`;
 }
 
 function getRange(when) {
@@ -32,68 +31,46 @@ export async function GET(req) {
     const when = searchParams.get("when") || "today";
     const token = searchParams.get("t") || "";
 
-    // אימות טוקן של מאמן
     const tokens = JSON.parse(process.env.COACH_TOKENS || "{}");
-    const coaches = JSON.parse(process.env.COACH_MAP || "{}");
     const coachId = tokens[token];
     if (!coachId) {
-      return new Response(
-        JSON.stringify({ error: true, message: "invalid token" }),
-        { status: 401 }
-      );
+      return new Response(JSON.stringify({ error: true, message: "invalid token" }), { status: 401 });
     }
 
-    // בניית טווח תאריכים לפורמט של Arbox
-    const range = getRange(when);
+    const { from, to } = getRange(when);
     const apiKey = (process.env.ARBOX_API_KEY || "").trim();
     const location = Number(process.env.ARBOX_LOCATION_ID || 1);
 
-    const body = { from: range.from, to: range.to, location, booked_users: true };
+    const body = { from, to, location, booked_users: true };
 
-    // קריאה ל-Arbox לפי הדוקומנטציה: POST + כותרת apiKey + גוף JSON
-    let res = await callArbox(
-      {
-        "Content-Type": "application/json",
-        "x-api-key": apiKey,
-      },
-      body
-    );
+    // ננסה כמה צמדי כותרות נפוצים
+    const headerVariants = [
+      { "Content-Type": "application/json", "Accept": "application/json", "x-api-key": apiKey },
+      { "Content-Type": "application/json", "Accept": "application/json", "ApiKey": apiKey },
+      { "Content-Type": "application/json", "Accept": "application/json", "apiKey": apiKey },
+    ];
 
-    // fallback אם יש כשל באימות
-    if (!res.ok) {
-      if (res.status === 401 || res.status === 403 || res.status === 500) {
-        res = await callArbox(
-          {
-            "Content-Type": "application/json",
-            "ApiKey": apiKey,
-          },
-          body
-        );
-        if (!res.ok) {
-          const text2 = await res.text();
-          return new Response(
-            JSON.stringify({ error: true, message: `Arbox ${res.status}`, details: text2 }),
-            { status: 502 }
-          );
-        }
-      } else {
-        const text = await res.text();
-        return new Response(
-          JSON.stringify({ error: true, message: `Arbox ${res.status}`, details: text }),
-          { status: 502 }
-        );
-      }
+    let lastText = "";
+    let res;
+    for (const hv of headerVariants) {
+      res = await callArbox(hv, body);
+      if (res.ok) break;
+      lastText = await res.text().catch(() => "");
+    }
+
+    if (!res || !res.ok) {
+      return new Response(
+        JSON.stringify({ error: true, message: `Arbox ${res?.status ?? "unknown"}`, details: lastText }),
+        { status: 502 }
+      );
     }
 
     const data = await res.json();
-    return new Response(
-      JSON.stringify({ ok: true, coach: coachId, when, arbox: data }),
-      { headers: { "Content-Type": "application/json" } }
-    );
+    return new Response(JSON.stringify({ ok: true, coach: coachId, when, arbox: data }), {
+      headers: { "Content-Type": "application/json" },
+    });
+
   } catch (err) {
-    return new Response(
-      JSON.stringify({ error: true, message: err?.message || "server error" }),
-      { status: 500 }
-    );
+    return new Response(JSON.stringify({ error: true, message: err?.message || "server error" }), { status: 500 });
   }
 }
