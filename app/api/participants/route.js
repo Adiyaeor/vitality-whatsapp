@@ -57,7 +57,6 @@ export async function GET(req) {
     // 2) fallback: ApiKey (רישיות שונות)
     if (!res.ok) {
       const text = await res.text();
-      // ננסה fallback רק אם נראה כמו כשל אימות/500
       if (res.status === 401 || res.status === 403 || res.status === 500) {
         res = await callArbox(
           {
