@@ -45,9 +45,9 @@ export async function GET(req) {
 
     // ננסה כמה צמדי כותרות נפוצים
     const headerVariants = [
-      { "Content-Type": "application/json", "Accept": "application/json", "x-api-key": apiKey },
-      { "Content-Type": "application/json", "Accept": "application/json", "ApiKey": apiKey },
       { "Content-Type": "application/json", "Accept": "application/json", "apiKey": apiKey },
+      { "Content-Type": "application/json", "Accept": "application/json", "ApiKey": apiKey },
+       { "Content-Type": "application/json", "Accept": "application/json", "x-api-key": apiKey },
     ];
 
     let lastText = "";
