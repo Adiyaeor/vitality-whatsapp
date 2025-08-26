@@ -112,7 +112,7 @@ export async function GET(req) {
       [];
 
     // סינון לפי המאמן
-    const filtered = rows.filter(r => rowMatchesCoach(r, allowedNames));
+    const filtered = nofilter ? rows : rows.filter(r => rowMatchesCoach(r, allowedNames));
 
     // שליפה "חכמה" של רשימות משתתפים מתוך השדות הנפוצים
     const participants = filtered.flatMap(r => {
