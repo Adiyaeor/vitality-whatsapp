@@ -1,24 +1,29 @@
-export const dynamic = "force-dynamic"; // אל תשמר בקאש
+export const dynamic = "force-dynamic"; // אל תשמור בקאש
 
-// dd-mm-YYYY - כמו ש-Arbox מצפים
-function fmt(d) {
-  const dd = String(d.getDate()).padStart(2, "0");
-  const mm = String(d.getMonth() + 1).padStart(2, "0");
+/** ---------- עזר: תאריכים בפורמט ש-Arbox ביקשו (YYYY-MM-DD) ---------- */
+function fmtYMD(d) {
   const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
   return `${yyyy}-${mm}-${dd}`;
 }
 
-// today / tomorrow / yesterday
+/** today / tomorrow / yesterday ⇒ טווח [fromDate, toDate] */
 function getRange(when) {
   const now = new Date();
   const day = new Date(now);
-  if (when === "yesterday") day.setDate(now.getDate() - 1);
-  else if (when === "tomorrow") day.setDate(now.getDate() + 1);
-  const f = fmt(day);
-  return { from: f, to: f };
+
+  if (when === "yesterday") day.setDate(day.getDate() - 1);
+  else if (when === "tomorrow") day.setDate(day.getDate() + 1);
+  // ברירת מחדל: today
+
+  // לפי הדוגמה מהקבוצה – ליום מסוים שולחים fromDate=היום, toDate=מחר
+  const fromDate = fmtYMD(day);
+  const toDate = fmtYMD(new Date(day.getFullYear(), day.getMonth(), day.getDate() + 1));
+  return { fromDate, toDate };
 }
 
-// בקשה ל-Arbox (עם וריאציות כותרת לאימות)
+/** קריאה לארבוקס (ננסה כמה וריאציות של הכותרת של המפתח) */
 async function callArbox(headersVariant, body) {
   return fetch("https://api.arboxapp.com/index.php/api/v2/reports/shiftSummaryReport", {
     method: "POST",
@@ -28,67 +33,41 @@ async function callArbox(headersVariant, body) {
   });
 }
 
-// ניסיון להוציא מזה את שם/זהות המדריך והמשתתפים – גמיש לשמות שדות שונים
-function normalizeItem(row) {
-  const coachName =
-    row?.coach_name ||
-    row?.trainer ||
-    row?.instructor ||
-    row?.staffName ||
-    row?.coach ||
-    "";
-
-  // לפעמים הרשימה יושבת בשדות שונים – ננסה כמה וריאציות
-  const participants =
-    row?.participants ||
-    row?.booked_users ||
-    row?.clients ||
-    row?.users ||
-    row?.attendees ||
-    [];
-
-  return { coachName, participants, raw: row };
-}
-
-// סינון ע"י שם מאמן בהתאם ל-COACH_MAP שלך (array של שמות לכל מאמן)
-function rowMatchesCoach(row, allowedNames = []) {
-  const { coachName } = normalizeItem(row);
-  if (!allowedNames.length) return true; // אם לא הוגדרו שמות—אל תסנן
-  const ref = (coachName || "").toString().trim().toLowerCase();
-  return allowedNames.some(n => ref.includes(n.toString().trim().toLowerCase()));
-}
-
+/** ---------- ה־API שלנו ---------- */
 export async function GET(req) {
   try {
     const { searchParams } = new URL(req.url);
     const when = searchParams.get("when") || "today";
     const token = searchParams.get("t") || "";
+    const nofilter = searchParams.has("nofilter"); // ?nofilter=1 יחזיר הכל בלי סינון לפי מאמן
+    const raw = searchParams.has("raw");          // ?raw=1 יחזיר את תשובת Arbox כמו שהיא
 
-    // אימות טוקן והבאת מיפוי שמות המאמן/ת
-    const tokens = JSON.parse(process.env.COACH_TOKENS || "{}");   // { "DN123": "coach-1", ... }
-    const coaches = JSON.parse(process.env.COACH_MAP || "{}");     // { "coach-1": ["דניאל"], ... }
+    // 1) אימות טוקן ומיפוי למאמן
+    const tokens = JSON.parse(process.env.COACH_TOKENS || "{}");
+    const coachMap = JSON.parse(process.env.COACH_MAP || "{}");
     const coachId = tokens[token];
-    if (!coachId) {
-      return new Response(JSON.stringify({ error: true, message: "invalid token" }), { status: 401 });
+    if (!coachId && !nofilter) {
+      return new Response(
+        JSON.stringify({ error: true, message: "invalid token" }),
+        { status: 401 }
+      );
     }
-    const allowedNames = Array.isArray(coaches[coachId]) ? coaches[coachId] : [];
 
-    // טווח התאריכים
-    const { from, to } = getRange(when);
-
-    // גוף הבקשה לפי ההנחיה של הקבוצה
-    const body = { fromDate: from, toDate: to };
-
+    // 2) בניית גוף הבקשה לפי מה שקיבלת מהקבוצה
+    const { fromDate, toDate } = getRange(when);
     const apiKey = (process.env.ARBOX_API_KEY || "").trim();
 
-    // ננסה קודם x-api-key, ואם צריך ניפול ל-ApiKey (שינוי רישיות)
+    const body = { fromDate, toDate };
+
+    // 3) וריאציות של כותרות מפתח – x-api-key / ApiKey / apiKey
     const headerVariants = [
       { "Content-Type": "application/json", Accept: "application/json", "x-api-key": apiKey },
       { "Content-Type": "application/json", Accept: "application/json", ApiKey: apiKey },
+      { "Content-Type": "application/json", Accept: "application/json", apiKey: apiKey },
     ];
 
-    let lastText = "";
     let res;
+    let lastText = "";
     for (const hv of headerVariants) {
       res = await callArbox(hv, body);
       if (res.ok) break;
@@ -97,46 +76,63 @@ export async function GET(req) {
 
     if (!res || !res.ok) {
       return new Response(
-        JSON.stringify({ error: true, message: `Arbox ${res?.status ?? "unknown"}`, details: lastText }),
+        JSON.stringify({
+          error: true,
+          message: `Arbox ${res?.status ?? "unknown"}`,
+          details: lastText,
+        }),
         { status: 502 }
       );
     }
 
-    const data = await res.json(); // מבנה התשובה בדו"ח—Arbox קובעים
-    // ננסה לנרמל למבנה צפוי: מערך של שורות דוח תחת data או rows וכו'
-    const rows =
-      Array.isArray(data) ? data :
-      Array.isArray(data?.data) ? data.data :
-      Array.isArray(data?.rows) ? data.rows :
-      Array.isArray(data?.result) ? data.result :
-      [];
+    // 4) פירוק תשובת Arbox
+    const arbox = await res.json(); // בדרך כלל שדה data: [...]
+    const list = Array.isArray(arbox?.data) ? arbox.data : Array.isArray(arbox) ? arbox : [];
 
-    // סינון לפי המאמן
-    const filtered = nofilter ? rows : rows.filter(r => rowMatchesCoach(r, allowedNames));
+    if (raw) {
+      // החזרה גולמית לצורך דיבוג
+      return new Response(JSON.stringify({ ok: true, coach: coachId ?? null, when, arbox }), {
+        headers: { "Content-Type": "application/json" },
+      });
+    }
 
-    // שליפה "חכמה" של רשימות משתתפים מתוך השדות הנפוצים
-    const participants = filtered.flatMap(r => {
-      const norm = normalizeItem(r);
-      const list = Array.isArray(norm.participants) ? norm.participants : [];
-      return list;
-    });
+    // 5) סינון לפי המאמן (אלא אם ביקשת nofilter)
+    let filtered = list;
+    if (!nofilter) {
+      const aliases = (coachMap[coachId] || []).map((s) => String(s).trim()).filter(Boolean);
+      filtered = list.filter((row) => {
+        const full = (row.coach_full_name || "").trim();
+        return aliases.length === 0 ? true : aliases.some((a) => full.includes(a));
+      });
+    }
 
-    // מחזירים גם נתונים גולמיים (לעזרה בדיבוג מול Arbox) וגם את התמצית למאמן
+    // 6) החזרה “ידידותית” – אפשר לשנות לפי הצורך
+    const simplified = filtered.map((r) => ({
+      time: r.time ?? null,
+      first_name: r.first_name ?? null,
+      last_name: r.last_name ?? null,
+      phone: r.phone ?? null,
+      coach: r.coach_full_name ?? null,
+      location: r.schedule_location ?? r.location ?? null,
+      schedule_id: r.schedule_id ?? null,
+    }));
+
     return new Response(
       JSON.stringify({
         ok: true,
+        coach: coachId ?? null,
         when,
-        coach: coachId,
-        dateRange: { from, to },
-        count: participants.length,
-        participants,
-        // להשוואה/תמיכה: השורה הגולמית והמאמן ש-Arbox מציינים
-        raw: filtered.map(normalizeItem),
+        fromDate,
+        toDate,
+        count: simplified.length,
+        participants: simplified,
       }),
       { headers: { "Content-Type": "application/json" } }
     );
-
   } catch (err) {
-    return new Response(JSON.stringify({ error: true, message: err?.message || "server error" }), { status: 500 });
+    return new Response(
+      JSON.stringify({ error: true, message: err?.message || "server error" }),
+      { status: 500 }
+    );
   }
 }
