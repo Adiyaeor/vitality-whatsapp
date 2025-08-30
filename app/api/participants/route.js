@@ -15,7 +15,7 @@ async function fetchParticipants(fromDate: string, toDate: string) {
   const headers = {
     "Content-Type": "application/json",
     Accept: "application/json",
-    "x-api-key": process.env.ARBOX_API_KEY || "",
+    "x-api-key": process.env.ARBOX_API_KEY || "", // ודא שהמפתח API מוגדר נכון
   };
 
   const body = JSON.stringify({ fromDate, toDate });
