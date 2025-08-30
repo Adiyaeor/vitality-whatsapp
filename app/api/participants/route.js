@@ -1,73 +1,84 @@
-"use client";
-import { useEffect, useState } from "react";
+import { NextRequest, NextResponse } from "next/server";
 
-function buildWaLink(phone: string, msg: string) {
-  const text = encodeURIComponent(msg);
-  return `https://wa.me/${phone}?text=${text}`;
-}
+export const runtime = "nodejs";
 
-export default function Page() {
-  const [date, setDate] = useState<string>(new Date().toISOString().slice(0, 10));
-  const [data, setData] = useState<any>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+// צורת נתונים אחידה לעמוד
+export type Participant = { id: string; name: string; phone: string };
+export type ClassRow = { id: string; title: string; start: string; coach?: string; participants: Participant[] };
+export type ParticipantsResponse = { date: string; classes: ClassRow[] };
 
-  async function load(d: string) {
-    setLoading(true);
-    setError(null);
-    try {
-      const res = await fetch(`/api/participants?date=${d}`, { cache: "no-store" });
-      if (!res.ok) throw new Error(`status ${res.status}`);
-      const json = await res.json();
-      setData(json);
-    } catch (e: any) {
-      setError(String(e.message || e));
-    } finally {
-      setLoading(false);
-    }
+// הוספתי את הפונקציה הזו כדי לאתר לוגים בזמן אמת
+async function fetchParticipants(fromDate: string, toDate: string) {
+  console.log(`Fetching data for fromDate: ${fromDate} toDate: ${toDate}`);  // לוג של התחלת הבקשה
+  
+  const url = `https://api.arboxapp.com/index.php/api/v2/reports/shiftSummaryReport`;
+  const headers = {
+    "Content-Type": "application/json",
+    Accept: "application/json",
+    "x-api-key": process.env.ARBOX_API_KEY || "",
+  };
+
+  const body = JSON.stringify({ fromDate, toDate });
+  const res = await fetch(url, { method: "POST", headers, body });
+
+  console.log(`Response Status: ${res.status}`);  // לוג של סטטוס התגובה (לראות אם 200/500 וכו')
+  
+  if (!res.ok) {
+    throw new Error(`Error fetching data: ${res.statusText}`);
   }
 
-  useEffect(() => {
-    load(date);
-  }, [date]);
+  return await res.json();
+}
 
-  return (
-    <main className="mx-auto max-w-4xl p-6" dir="rtl">
-      <h1 className="text-2xl font-bold mb-4">רשימת מתאמנים בזמן אמת</h1>
+function toIL(raw: string) {
+  const d = raw.replace(/\D+/g, "");
+  if (!d) return "";
+  if (d.startsWith("972")) return d;
+  if (d.startsWith("0")) return "972" + d.slice(1);
+  return "972" + d;
+}
 
-      <div className="flex gap-3 items-center mb-6">
-        <label className="text-sm">תאריך</label>
-        <input type="date" value={date} onChange={(e) => { setDate(e.target.value); load(e.target.value); }} className="border rounded px-3 py-2" />
-      </div>
+export async function GET(req: NextRequest) {
+  try {
+    const { searchParams } = new URL(req.url);
+    const date = searchParams.get("date") || new Date().toISOString().slice(0, 10);
+    const fromDate = `${date}T00:00:00Z`;
+    const toDate = `${date}T23:59:59Z`;
 
-      {loading && <p>טוען…</p>}
-      {error && <p className="text-red-600">שגיאה: {error}</p>}
+    // קריאה ל־API
+    const data = await fetchParticipants(fromDate, toDate);
 
-      {data?.participants?.map((p: any) => (
-        <section key={p.id} className="mb-8 border rounded-2xl p-4 shadow-sm">
-          <header className="mb-3">
-            <h2 className="text-xl font-semibold">{p.name}</h2>
-          </header>
-          <textarea placeholder="כתבו כאן הודעה אישית…" className="border rounded-lg p-3 w-full md:w-[36ch]" id={`msg-${p.id}`} />
-          <a
-            onClick={(e) => {
-              const ta = document.getElementById(`msg-${p.id}`) as HTMLTextAreaElement | null;
-              const msg = ta?.value || "היי, רק מזכיר/ה את השיעור הקרוב.";
-              const href = buildWaLink(p.phone, msg);
-              (e.currentTarget as HTMLAnchorElement).setAttribute("href", href);
-            }}
-            href="#"
-            target="_blank"
-            className="bg-green-600 text-white px-4 py-2 rounded-xl shadow text-center"
-          >
-            שלח
-          </a>
-        </section>
-      ))}
+    // מיפוי נתונים לתצורה אחידה
+    const participants = data.data.map((r: any) => {
+      const phone = toIL(r.phone || r.additional_phone || "");
+      if (!phone) return null;
 
-      {!loading && data?.participants?.length === 0 && (
-        <p>אין מתאמנים בתאריך שנבחר.</p>
-      )}
-    </main>
-  );
+      const start = `${date}T${r.time}:00`;
+      return {
+        id: `${r.schedule_id}-${phone}`,
+        name: `${r.first_name || ""} ${r.last_name || ""}`,
+        phone,
+      };
+    }).filter(Boolean);
+
+    const simplified = participants.map((p: any) => ({
+      ...p,
+      schedule_id: p.id,
+    }));
+
+    return NextResponse.json(
+      {
+        ok: true,
+        date,
+        participants: simplified,
+      },
+      { headers: { "Content-Type": "application/json" } }
+    );
+  } catch (err) {
+    console.error("Error:", err);
+    return new Response(
+      JSON.stringify({ error: true, message: err.message || "server error" }),
+      { status: 500 }
+    );
+  }
 }
