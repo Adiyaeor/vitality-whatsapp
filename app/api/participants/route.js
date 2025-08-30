@@ -1,143 +1,73 @@
-export const dynamic = "force-dynamic"; // אל תשמור בקאש
+"use client";
+import { useEffect, useState } from "react";
 
-function fmtYMD(d) {
-  const yyyy = d.getFullYear();
-  const mm = String(d.getMonth() + 1).padStart(2, "0");
-  const dd = String(d.getDate()).padStart(2, "0");
-  return `${yyyy}-${mm}-${dd}`;
+function buildWaLink(phone: string, msg: string) {
+  const text = encodeURIComponent(msg);
+  return `https://wa.me/${phone}?text=${text}`;
 }
 
-function getRange(when) {
-  const now = new Date();
-  const day = new Date(now);
+export default function Page() {
+  const [date, setDate] = useState<string>(new Date().toISOString().slice(0, 10));
+  const [data, setData] = useState<any>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  if (when === "yesterday") day.setDate(day.getDate() - 1);
-  else if (when === "tomorrow") day.setDate(day.getDate() + 1);
-
-  const fromDate = fmtYMD(day);
-  const toDate = fmtYMD(new Date(day.getFullYear(), day.getMonth(), day.getDate() + 1));
-  return { fromDate, toDate };
-}
-
-async function callArbox(url, headersVariant, body) {
-  return fetch(url, {
-    method: "POST",
-    headers: headersVariant,
-    body: JSON.stringify(body),
-    cache: "no-store",
-  });
-}
-
-export async function GET(req) {
-  try {
-    const { searchParams } = new URL(req.url);
-    const when = searchParams.get("when") || "today";
-    const token = searchParams.get("t") || "";
-    const nofilter = searchParams.has("nofilter");
-    const raw = searchParams.has("raw");
-
-    const tokens = JSON.parse(process.env.COACH_TOKENS || "{}");
-    const coachMap = JSON.parse(process.env.COACH_MAP || "{}");
-    const coachId = tokens[token];
-    if (!coachId && !nofilter) {
-      return new Response(JSON.stringify({ error: true, message: "invalid token" }), { status: 401 });
+  async function load(d: string) {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/participants?date=${d}`, { cache: "no-store" });
+      if (!res.ok) throw new Error(`status ${res.status}`);
+      const json = await res.json();
+      setData(json);
+    } catch (e: any) {
+      setError(String(e.message || e));
+    } finally {
+      setLoading(false);
     }
-
-    const { fromDate, toDate } = getRange(when);
-    const apiKey = (process.env.ARBOX_API_KEY || "").trim();
-    const locationId = Number(process.env.ARBOX_LOCATION_ID || 16681);
-
-    // נבנה גוף בקשה עם כמה תיבות אפשריות למיקום + תאריכים
-    const baseBody = { fromDate, toDate };
-    const bodies = [
-      { ...baseBody, location_box_id: locationId },
-      { ...baseBody, locationId },
-      { ...baseBody, location_fk: locationId },
-      { ...baseBody, location: locationId },
-    ];
-
-    // ננסה כמה וריאציות של כותרות מפתח
-    const headerVariants = [
-      { "Content-Type": "application/json", Accept: "application/json", "x-api-key": apiKey },
-      { "Content-Type": "application/json", Accept: "application/json", ApiKey: apiKey },
-      { "Content-Type": "application/json", Accept: "application/json", apiKey: apiKey },
-    ];
-
-    // ננסה גם 2 כתובות אפשריות (אם הדוח פתאום מוגדר אחרת בסביבה שלך)
-    const urls = [
-      "https://api.arboxapp.com/index.php/api/v2/reports/shiftSummaryReport",
-      "https://api.arboxapp.com/index.php/api/v2/schedule",
-    ];
-
-    let res;
-    let lastText = "";
-    let tried = [];
-
-    outer: for (const url of urls) {
-      for (const hv of headerVariants) {
-        for (const body of bodies) {
-          res = await callArbox(url, hv, body);
-          tried.push({ url, headers: Object.keys(hv), body });
-          if (res.ok) break outer;
-          lastText = await res.text().catch(() => "");
-        }
-      }
-    }
-
-    if (!res || !res.ok) {
-      return new Response(
-        JSON.stringify({
-          error: true,
-          message: `Arbox ${res?.status ?? "unknown"}`,
-          details: lastText,
-          tried,
-        }),
-        { status: 502 }
-      );
-    }
-
-    const arbox = await res.json();
-    const list = Array.isArray(arbox?.data) ? arbox.data : Array.isArray(arbox) ? arbox : [];
-
-    if (raw) {
-      return new Response(JSON.stringify({ ok: true, coach: coachId ?? null, when, arbox }), {
-        headers: { "Content-Type": "application/json" },
-      });
-    }
-
-    let filtered = list;
-    if (!nofilter) {
-      const aliases = (coachMap[coachId] || []).map((s) => String(s).trim()).filter(Boolean);
-      filtered = list.filter((row) => {
-        const full = (row.coach_full_name || "").trim();
-        return aliases.length === 0 ? true : aliases.some((a) => full.includes(a));
-      });
-    }
-
-    const simplified = filtered.map((r) => ({
-      time: r.time ?? null,
-      first_name: r.first_name ?? null,
-      last_name: r.last_name ?? null,
-      phone: r.phone ?? null,
-      coach: r.coach_full_name ?? null,
-      location: r.schedule_location ?? r.location ?? null,
-      schedule_id: r.schedule_id ?? null,
-    }));
-
-    return new Response(
-      JSON.stringify({
-        ok: true,
-        coach: coachId ?? null,
-        when,
-        fromDate,
-        toDate,
-        locationId,
-        count: simplified.length,
-        participants: simplified,
-      }),
-      { headers: { "Content-Type": "application/json" } }
-    );
-  } catch (err) {
-    return new Response(JSON.stringify({ error: true, message: err?.message || "server error" }), { status: 500 });
   }
+
+  useEffect(() => {
+    load(date);
+  }, [date]);
+
+  return (
+    <main className="mx-auto max-w-4xl p-6" dir="rtl">
+      <h1 className="text-2xl font-bold mb-4">רשימת מתאמנים בזמן אמת</h1>
+
+      <div className="flex gap-3 items-center mb-6">
+        <label className="text-sm">תאריך</label>
+        <input type="date" value={date} onChange={(e) => { setDate(e.target.value); load(e.target.value); }} className="border rounded px-3 py-2" />
+      </div>
+
+      {loading && <p>טוען…</p>}
+      {error && <p className="text-red-600">שגיאה: {error}</p>}
+
+      {data?.participants?.map((p: any) => (
+        <section key={p.id} className="mb-8 border rounded-2xl p-4 shadow-sm">
+          <header className="mb-3">
+            <h2 className="text-xl font-semibold">{p.name}</h2>
+          </header>
+          <textarea placeholder="כתבו כאן הודעה אישית…" className="border rounded-lg p-3 w-full md:w-[36ch]" id={`msg-${p.id}`} />
+          <a
+            onClick={(e) => {
+              const ta = document.getElementById(`msg-${p.id}`) as HTMLTextAreaElement | null;
+              const msg = ta?.value || "היי, רק מזכיר/ה את השיעור הקרוב.";
+              const href = buildWaLink(p.phone, msg);
+              (e.currentTarget as HTMLAnchorElement).setAttribute("href", href);
+            }}
+            href="#"
+            target="_blank"
+            className="bg-green-600 text-white px-4 py-2 rounded-xl shadow text-center"
+          >
+            שלח
+          </a>
+        </section>
+      ))}
+
+      {!loading && data?.participants?.length === 0 && (
+        <p>אין מתאמנים בתאריך שנבחר.</p>
+      )}
+    </main>
+  );
 }
